@@ -1,0 +1,107 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: nifi
+  labels:
+    app: nifi
+spec:
+  selector:
+    matchLabels:
+      app: nifi
+  template:
+    metadata:
+      labels:
+        app: nifi
+    spec:
+      securityContext:
+        runAsUser: 0
+      initContainers:
+      - name: chown
+        image: busybox
+        command: ["chown", "-R", "1000:1000", "/nifi/conf", "/nifi/data"]
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - name: nifi-conf
+          mountPath: /nifi/conf
+          readOnly: true
+        - name: nifi-data
+          mountPath: /nifi/data
+      containers:
+      - name: nifi
+        image: apache/nifi:1.18.0
+        ports:
+        - containerPort: 8080
+        env:
+        - name: NIFI_WEB_HTTP_PORT
+          value: "8080"
+        volumeMounts:
+        - name: nifi-conf
+          mountPath: /opt/nifi/nifi-current/conf
+        - name: nifi-data
+          mountPath: /opt/nifi/nifi-current/data
+        livenessProbe:
+          httpGet:
+            path: /nifi-api/flow/process-groups/root
+            port: 8080
+          initialDelaySeconds: 120
+          timeoutSeconds: 30
+        readinessProbe:
+          httpGet:
+            path: /nifi-api/system-diagnostics
+            port: 8080
+          initialDelaySeconds: 30
+          timeoutSeconds: 30
+        resources:
+          requests:
+            cpu: 500m
+            memory: 1Gi
+          limits:
+            cpu: 1000m
+            memory: 2Gi
+      volumes:
+      - name: nifi-conf
+        configMap:
+          name: nifi-conf
+      - name: nifi-data
+        persistentVolumeClaim:
+          claimName: nifi-data
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nifi-service
+  labels:
+    app: nifi
+spec:
+  selector:
+    app: nifi
+  ports:
+  - name: nifi-web-http
+    port: 8080
+    targetPort: 8080
+  - name: nifi-node-protocol
+    port: 10443
+    targetPort: 10443
+
+---
+kind: Ingress
+metadata:
+  name: nifi-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+spec:
+  rules:
+  - host: nifi.example.com
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        pathRewrite: /nifi
+        backend:
+          service:
+            name: nifi-service
+            port:
+              name: nifi-web-http
